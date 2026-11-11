@@ -1,0 +1,398 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="theme-color" content="#083b33">
+<title>Expiration Scan</title>
+<!--
+  RxDesk Inventory Tools: Expiration Scan (the phone page).
+  Point the phone at the 2D (GS1 Data Matrix) code on each box and keep moving: every box is logged by itself.
+  Hosted on GitHub Pages (the camera needs https); opened from the QR code in RxDesk > Inventory Tools > Phones, whose
+  link carries the web app address and access key after the # (never sent to GitHub).
+  Products only: no patient data.
+-->
+<script src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.1.6/dist/iife/reader/index.js"></script>
+<style>
+:root {
+  /* the Consignment Log's dark theme, in Inventory's emerald */
+  --brand: #19b38c; --brand-deep: #0d6b56; --ink: #e7f1f5; --muted: #8fa7b1; --line: #26414c; --paper: #142a33; --raise: #1b3640;
+  --bg: #0b1a20; --good: #34d07a; --again: #8fa7b1; --warn: #f5b14c; --bad: #ff6b6b;
+  --shadow: 0 1px 2px rgba(0,0,0,.35), 0 8px 22px rgba(0,0,0,.28);
+  --safe-t: env(safe-area-inset-top); --safe-b: env(safe-area-inset-bottom);
+  color-scheme: dark;
+}
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--ink); font: 16px/1.35 -apple-system, BlinkMacSystemFont, system-ui, "Segoe UI", Roboto, sans-serif; }
+button { font: inherit; color: inherit; }
+.hidden { display: none !important; }
+
+/* start screen */
+#start { min-height: 100%; display: flex; flex-direction: column; }
+.head { padding: calc(18px + var(--safe-t)) 20px 18px; background: linear-gradient(120deg, #083b33, #0f7a63); display: flex; align-items: center; gap: 12px; }
+.head .mark { width: 44px; height: 44px; border-radius: 13px; background: rgba(255,255,255,.18); display: grid; place-items: center; }
+.head .mark svg { width: 26px; height: 26px; }
+.head h1 { margin: 0; font-size: 1.3rem; font-weight: 800; color: #fff; }
+.head p { margin: 2px 0 0; color: rgba(255,255,255,.75); font-size: .82rem; }
+.body { flex: 1; padding: 20px 18px calc(20px + var(--safe-b)); display: flex; flex-direction: column; gap: 16px; }
+.card { background: var(--paper); border-radius: 20px; padding: 18px; box-shadow: var(--shadow); }
+.card h2 { margin: 0 0 12px; font-size: .74rem; letter-spacing: .09em; text-transform: uppercase; color: var(--muted); font-weight: 800; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; }
+.chip { border: 1.5px solid var(--line); background: var(--raise); border-radius: 999px; padding: 11px 16px; font-weight: 700; color: var(--ink); }
+.chip.on { background: var(--brand); border-color: var(--brand); color: #04221b; }
+.who { width: 100%; border: 1.5px solid var(--line); background: var(--raise); color: var(--ink); border-radius: 14px; padding: 13px 14px; font-size: 1rem; outline: none; }
+.who:focus { border-color: var(--brand); }
+.who::placeholder { color: var(--muted); }
+.go { border: 0; border-radius: 18px; padding: 19px; background: linear-gradient(135deg, #0f8a6f, #19b38c); color: #fff; font-weight: 800; font-size: 1.15rem; box-shadow: var(--shadow); }
+.go:disabled { opacity: .4; }
+.tip { color: var(--muted); font-size: .84rem; line-height: 1.45; margin: 0 4px; }
+.tip b { color: var(--ink); }
+.err { background: #45191c; color: #ffb3b3; border-radius: 14px; padding: 13px 14px; font-size: .9rem; }
+.err.done { background: #133b27; color: #8ff0b8; }
+
+/* the cover over the camera: tap to start, the summary after Done, or "open from the QR code" */
+.cover { position: absolute; inset: 0; z-index: 8; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px; padding: 30px; text-align: center; background: radial-gradient(ellipse at top, #0f5a4a, var(--bg) 70%); }
+.cover .mark { width: 72px; height: 72px; border-radius: 22px; background: rgba(255,255,255,.12); display: grid; place-items: center; }
+.cover .mark svg { width: 40px; height: 40px; }
+.cover h1 { margin: 6px 0 0; font-size: 1.6rem; font-weight: 800; }
+.cover p { margin: 0; color: var(--muted); max-width: 300px; line-height: 1.45; }
+.cover p b { color: var(--ink); }
+.cover .go { margin-top: 18px; width: min(320px, 100%); }
+.cover.hidden { display: none; }
+.top .lbl { color: rgba(255,255,255,.6); font-size: .74rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; align-self: center; padding: 0 4px 0 6px; white-space: nowrap; }
+
+/* scanning screen */
+#scan { position: fixed; inset: 0; background: #000; }
+.top { position: absolute; top: 0; left: 0; right: 0; z-index: 7; padding: calc(10px + var(--safe-t)) 10px 10px; display: flex; gap: 6px; overflow-x: auto; background: linear-gradient(rgba(0,0,0,.45), rgba(0,0,0,0)); scrollbar-width: none; }
+.top::-webkit-scrollbar { display: none; }
+.top .chip { padding: 8px 14px; font-size: .85rem; background: rgba(11,26,32,.5); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border: 1px solid rgba(255,255,255,.1); color: #fff; white-space: nowrap; }
+.top .chip.on { background: var(--brand); color: #04221b; }
+.cam { position: absolute; inset: 0; overflow: hidden; }
+video { width: 100%; height: 100%; object-fit: cover; }
+.marks { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+.edge { position: absolute; inset: 0; pointer-events: none; box-shadow: inset 0 0 0 0 transparent; transition: box-shadow .3s ease-out; }
+.edge.show { box-shadow: inset 0 0 0 14px var(--c); transition: none; }
+.tint { position: absolute; inset: 0; pointer-events: none; opacity: 0; transition: opacity .35s ease-out; }
+.tint.show { opacity: .35; transition: none; }
+.banner { position: absolute; left: 12px; right: 12px; bottom: calc(86px + var(--safe-b)); z-index: 6; border-radius: 16px; padding: 12px 14px; color: #fff; font-weight: 800; font-size: 1.25rem; text-align: center; opacity: 0; transform: translateY(-6px); transition: opacity .25s, transform .25s; pointer-events: none; }
+.banner.show { opacity: 1; transform: none; }
+.banner small { display: block; font-weight: 600; font-size: .8rem; opacity: .9; }
+/* one floating glass bar: the count, what's saving, Done */
+.dockbar { position: absolute; left: 12px; right: 12px; bottom: calc(12px + var(--safe-b)); z-index: 7; display: flex; align-items: center; gap: 12px; padding: 10px 10px 10px 18px; border-radius: 24px; background: rgba(11,26,32,.62); -webkit-backdrop-filter: blur(18px) saturate(1.4); backdrop-filter: blur(18px) saturate(1.4); border: 1px solid rgba(255,255,255,.08); }
+.count { display: flex; align-items: baseline; gap: 6px; }
+.count b { font-size: 2rem; font-weight: 800; line-height: 1; font-variant-numeric: tabular-nums; }
+.count b.bump { animation: bump .25s ease-out; } @keyframes bump { 40% { transform: scale(1.18); color: var(--good); } }
+.count span { color: var(--muted); font-size: .85rem; font-weight: 600; }
+.meta { flex: 1; display: flex; flex-direction: column; gap: 2px; min-width: 0; font-size: .78rem; }
+.meta .short { color: var(--warn); font-weight: 700; white-space: nowrap; }
+.sync { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.sync.wait { color: var(--warn); font-weight: 600; }
+.ibtn { width: 46px; height: 46px; border-radius: 16px; border: 0; background: rgba(255,255,255,.1); color: #fff; display: grid; place-items: center; }
+.ibtn.on { background: #fff; color: #000; }
+.ibtn svg { width: 22px; height: 22px; }
+.done { border: 0; border-radius: 16px; height: 46px; padding: 0 22px; background: var(--brand); color: #04221b; font-weight: 800; font-size: 1rem; }
+</style>
+</head>
+<body>
+
+<section id="scan">
+  <div class="top" id="topSections"></div>
+  <div class="cam">
+    <video id="video" playsinline muted autoplay></video>
+    <canvas class="marks" id="marks"></canvas>
+    <div class="tint" id="tint"></div>
+    <div class="edge" id="edge"></div>
+    <div class="banner" id="banner"></div>
+    <div class="cover" id="cover">
+      <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 8h3v3H8zM13 13h3v3h-3zM13 8h3M8 13v3"/></svg></div>
+      <h1>Expiration Scan</h1>
+      <p id="coverMsg">Point at the shelf and sweep slowly.</p>
+      <button class="go" id="goBtn">Start scanning</button>
+    </div>
+  </div>
+  <div class="dockbar">
+    <div class="count"><b id="sBoxes">0</b><span>boxes</span></div>
+    <div class="meta"><span class="short" id="shortWrap" hidden><b id="sShort">0</b> expire soon</span><span class="sync" id="sync">Ready</span></div>
+    <button class="ibtn" id="torchBtn" hidden aria-label="Light"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M9 2h6l-1 7h-4z"/><path d="M10 9v11a2 2 0 0 0 4 0V9"/></svg></button>
+    <button class="done" id="stopBtn">Done</button>
+  </div>
+  <span id="sAgain" hidden></span><div id="recent" hidden></div>
+</section>
+
+<script>
+(() => {
+  "use strict";
+  const $ = (id) => document.getElementById(id);
+  const SHORT_DAYS = 90;
+
+  // ---------- where to send (from the link after #, remembered on this phone)
+  const hash = new URLSearchParams(location.hash.slice(1));
+  const store = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); localStorage.setItem(k, v); } catch (e) { return null; } };
+  if (hash.get("u") && hash.get("k")) { store("inv.u", hash.get("u")); store("inv.k", hash.get("k")); }
+  const API = store("inv.u") || "", KEY = store("inv.k") || "";
+  let sections = ["Derm", "Eye", "Women's Health", "Counters", "Fridge"];
+  let section = "";   // optional, and fresh each time the page opens (the next person never inherits it)
+
+  async function api(body) {
+    const r = await fetch(API, { method: "POST", body: JSON.stringify(Object.assign({ k: KEY }, body)), headers: { "Content-Type": "text/plain;charset=utf-8" }, redirect: "follow" });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || "failed");
+    return j;
+  }
+
+  function drawChips() {
+    const box = $("topSections"); box.innerHTML = '<span class="lbl">Section</span>';
+    sections.forEach((x) => {
+      const b = document.createElement("button"); b.className = "chip" + (x === section ? " on" : ""); b.textContent = x;
+      b.onclick = () => { section = section === x ? "" : x; drawChips(); showSync(); say(section ? "Section: " + section : "No section", "", "rgba(13,107,86,.95)", 900); };
+      box.append(b);
+    });
+  }
+  if (API && KEY) api({ a: "config" }).then((j) => { if (Array.isArray(j.sections) && j.sections.length) { sections = j.sections; drawChips(); } }).catch(() => {});
+  drawChips();
+
+  // ---------- sound (iPhones can't vibrate from a web page: a sound and a flash instead)
+  let ac = null;
+  function tone(freq, ms, type, when, vol) {
+    if (!ac) return;
+    const t = ac.currentTime + (when || 0), o = ac.createOscillator(), g = ac.createGain();
+    o.type = type || "sine"; o.frequency.value = freq;
+    g.gain.setValueAtTime(0.0001, t); g.gain.exponentialRampToValueAtTime(vol || 0.25, t + 0.008); g.gain.exponentialRampToValueAtTime(0.0001, t + ms / 1000);
+    o.connect(g).connect(ac.destination); o.start(t); o.stop(t + ms / 1000 + 0.02);
+  }
+  const buzz = () => { try { navigator.vibrate && navigator.vibrate([90, 40, 90]); } catch (e) { } };
+  const SOUND = {
+    good: () => tone(1320, 55, "sine", 0, 0.22),
+    again: () => tone(660, 40, "sine", 0, 0.12),
+    short: () => { tone(988, 90, "triangle", 0, 0.3); tone(740, 140, "triangle", 0.11, 0.3); },
+    expired: () => { tone(880, 90, "square", 0, 0.18); tone(660, 90, "square", 0.12, 0.18); tone(440, 160, "square", 0.24, 0.18); },
+    bad: () => { tone(160, 200, "sawtooth", 0, 0.28); buzz(); },
+  };
+  let flashT = 0, bannerT = 0;
+  let tintT = 0;
+  function flash(color, ms, tint) {
+    const f = $("edge"); f.style.setProperty("--c", color); f.classList.remove("show"); void f.offsetWidth; f.classList.add("show");
+    clearTimeout(flashT); flashT = setTimeout(() => f.classList.remove("show"), ms || 180);
+    if (tint) { const t = $("tint"); t.style.background = color; t.classList.add("show"); clearTimeout(tintT); tintT = setTimeout(() => t.classList.remove("show"), ms || 180); }
+  }
+  function say(text, small, color, ms) {
+    const b = $("banner"); b.innerHTML = ""; b.append(text); if (small) { const s = document.createElement("small"); s.textContent = small; b.append(s); }
+    b.style.background = color; b.classList.add("show"); clearTimeout(bannerT); bannerT = setTimeout(() => b.classList.remove("show"), ms || 1400);
+  }
+
+  // ---------- GS1: (01) GTIN, (17) expiration, (10) lot, (21) serial
+  function parseGs1(text) {
+    const out = {};
+    if (text.indexOf("(") >= 0) { const re = /\((\d{2,4})\)([^(]*)/g; let m; while ((m = re.exec(text))) out[m[1]] = m[2].trim(); return out; }
+    // plain form (GS between variable fields)
+    const fixed = { "01": 14, "11": 6, "17": 6, "15": 6 };
+    let s = text.replace(/^\]d2/, ""), i = 0;
+    while (i < s.length) {
+      if (s[i] === "\x1d") { i++; continue; }
+      const ai = s.substr(i, 2); i += 2;
+      if (fixed[ai]) { out[ai] = s.substr(i, fixed[ai]); i += fixed[ai]; }
+      else { let e = s.indexOf("\x1d", i); if (e < 0) e = s.length; out[ai] = s.slice(i, e); i = e + 1; }
+    }
+    return out;
+  }
+  function expDate(yymmdd) {
+    if (!/^\d{6}$/.test(yymmdd)) return null;
+    const y = 2000 + +yymmdd.slice(0, 2), m = +yymmdd.slice(2, 4); let d = +yymmdd.slice(4, 6);
+    if (m < 1 || m > 12) return null;
+    const last = new Date(y, m, 0).getDate(); if (d === 0) d = last; if (d > last) return null;
+    return new Date(y, m - 1, d);
+  }
+  const iso = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
+  const mmyyyy = (d) => String(d.getMonth() + 1).padStart(2, "0") + "/" + d.getFullYear();
+
+  // ---------- the queue of scans to send (kept on the phone until saved, so no signal = nothing lost)
+  let queue = []; try { queue = JSON.parse(store("inv.queue") || "[]"); } catch (e) { queue = []; }
+  const saveQ = () => store("inv.queue", JSON.stringify(queue.slice(-5000)));
+  let sending = false, failed = false;
+  async function flush() {
+    if (sending || !queue.length) { showSync(); return; }
+    sending = true; showSync();
+    const batch = queue.slice(0, 100);
+    try {
+      await api({ a: "scan", device: "phone", rows: batch });
+      queue = queue.slice(batch.length); saveQ(); failed = false;
+    } catch (e) { failed = true; /* offline or busy: tried again in a moment */ }
+    sending = false; showSync();
+  }
+  function showSync() {
+    const n = queue.length;
+    $("sync").textContent = n ? (failed && !sending ? n + " waiting for signal" : "Saving…") : (boxes ? "✓ All saved" + (section ? " · " + section : "") : (section ? section + " · " : "") + "Sweep slowly along the shelf");
+    $("sync").classList.toggle("wait", n > 0 && failed);
+  }
+  setInterval(flush, 2000);
+
+  // ---------- one sweep's counts
+  const seen = new Set(); let boxes = 0, short = 0, again = 0;
+  function addRecent(cls, exp, what) {
+    const r = document.createElement("div"); r.className = "r " + cls;
+    const d = document.createElement("span"); d.className = "dot";
+    const w = document.createElement("span"); w.className = "what"; w.textContent = what;
+    const e = document.createElement("span"); e.className = "exp"; e.textContent = exp;
+    r.append(d, w, e); $("recent").prepend(r);
+    while ($("recent").children.length > 12) $("recent").lastChild.remove();
+  }
+  function counts() {
+    const b = $("sBoxes"); if (b.textContent !== String(boxes)) { b.textContent = boxes; b.classList.remove("bump"); void b.offsetWidth; b.classList.add("bump"); }
+    $("sShort").textContent = short; $("shortWrap").hidden = !short;
+  }
+
+  // Each code is remembered while it's in view, so a shelf sweep counts every box once. A serialized box (most Rx
+  // boxes) counts once per sweep; a code without a serial counts again only after it has been out of view ~2 s.
+  const inView = new Map();     // text -> last time seen
+  const kindOf = new Map();     // text -> what it was (so its outline keeps its color while it stays in view)
+  const PRUNE_MS = 2000;
+  function classify(text, format) {
+    const f = classify1(text, format);
+    if (f.kind === "held") f.show = kindOf.get(text) || "good"; else kindOf.set(text, f.kind);
+    return f;
+  }
+  function classify1(text, format) {
+    const now = Date.now(), last = inView.get(text);
+    inView.set(text, now);
+    if (last && now - last < PRUNE_MS) return { kind: "held" };
+    const g = format === "DataMatrix" || /^\(01\)/.test(text) ? parseGs1(text) : {};
+    const gtin = g["01"] || "", exp = expDate(g["17"] || "");
+    if (!/^\d{14}$/.test(gtin) || !exp) return { kind: "bad", qr: format === "QRCode" };
+    const serial = g["21"] || "", lot = g["10"] || "", ndc10 = gtin.startsWith("003") ? gtin.slice(3, 13) : "";
+    const key = serial ? gtin + "|" + serial : "";
+    if (key && seen.has(key)) { again++; return { kind: "again" }; }
+    if (key) seen.add(key);
+    const days = Math.floor((exp - new Date(new Date().toDateString())) / 864e5);
+    boxes++;
+    queue.push({ t: new Date().toISOString(), section, gtin, ndc10, exp: iso(exp), lot, serial });
+    const what = (ndc10 ? ndc10.replace(/^(\d{5})(\d{3})(\d{2})$/, "$1-$2-$3") : gtin) + (lot ? " · " + lot : "");
+    const kind = days < 0 ? "expired" : days <= SHORT_DAYS ? "short" : "good";
+    if (kind !== "good") short++;
+    addRecent(kind === "good" ? "" : kind, mmyyyy(exp), what);
+    return { kind, exp, days };
+  }
+  const COLOR = { good: "#22c55e", again: "#94a3b8", held: "#22c55e", short: "#f59e0b", expired: "#dc2626", bad: "#dc2626" };
+  // one sound and one edge flash per frame, however many codes were in it (the worst news wins)
+  function feedback(found) {
+    const rank = ["expired", "short", "bad", "good", "again"];
+    let top = null; found.forEach((f) => { if (f.kind !== "held" && (!top || rank.indexOf(f.kind) < rank.indexOf(top.kind))) top = f; });
+    if (!top) return;
+    if (found.some((f) => f.kind !== "held" && f.kind !== "bad" && f.kind !== "again")) { saveQ(); counts(); }
+    else if (top.kind === "again") counts();
+    const n = found.filter((f) => f.kind === "good" || f.kind === "short" || f.kind === "expired").length;
+    if (top.kind === "expired") { SOUND.expired(); flash(COLOR.expired, 600, true); say("EXPIRED " + mmyyyy(top.exp), "Pull this box", "rgba(185,28,28,.96)", 1800); }
+    else if (top.kind === "short") { SOUND.short(); flash(COLOR.short, 450); say("EXP " + mmyyyy(top.exp), top.days + " days left", "rgba(217,119,6,.96)", 1500); }
+    else if (top.kind === "bad") { SOUND.bad(); flash(COLOR.bad, 300, true); say(top.qr ? "No expiration in this code" : "Not a drug box code", "Scan the square 2D code on the box", "rgba(220,38,38,.95)", 1000); }
+    else if (top.kind === "good") { SOUND.good(); flash(COLOR.good, n > 1 ? 260 : 180); }
+    else { SOUND.again(); flash(COLOR.again, 120); }
+  }
+  // outline each code where it sits on screen (the video is cropped to fill the screen: map frame -> screen)
+  const marks = $("marks"), mctx = marks.getContext("2d");
+  let outlines = [];   // { pts, color, until }
+  function drawMarks() {
+    const r = marks.getBoundingClientRect(), dpr = window.devicePixelRatio || 1;
+    if (marks.width !== Math.round(r.width * dpr)) { marks.width = Math.round(r.width * dpr); marks.height = Math.round(r.height * dpr); }
+    mctx.clearRect(0, 0, marks.width, marks.height);
+    const now = Date.now(); outlines = outlines.filter((o) => o.until > now);
+    mctx.lineCap = "round"; mctx.lineJoin = "round"; mctx.lineWidth = 3.5 * dpr;
+    outlines.forEach((o) => {
+      // just the four corners of each code, like a camera's focus marks
+      mctx.strokeStyle = o.color; mctx.beginPath();
+      for (let i = 0; i < 4; i++) {
+        const c = o.pts[i], a = o.pts[(i + 3) % 4], b = o.pts[(i + 1) % 4], f = 0.28;
+        mctx.moveTo((c.x + (a.x - c.x) * f) * dpr, (c.y + (a.y - c.y) * f) * dpr);
+        mctx.lineTo(c.x * dpr, c.y * dpr);
+        mctx.lineTo((c.x + (b.x - c.x) * f) * dpr, (c.y + (b.y - c.y) * f) * dpr);
+      }
+      mctx.stroke();
+    });
+  }
+  function toScreen(p, scale) {
+    const v = $("video"), r = v.getBoundingClientRect();
+    const k = Math.max(r.width / v.videoWidth, r.height / v.videoHeight);
+    const ox = (r.width - v.videoWidth * k) / 2, oy = (r.height - v.videoHeight * k) / 2;
+    return { x: (p.x / scale) * k + ox, y: (p.y / scale) * k + oy };
+  }
+
+  // ---------- the camera, read continuously
+  let stream = null, running = false, track = null;
+  const canvas = document.createElement("canvas"), ctx = canvas.getContext("2d", { willReadFrequently: true });
+  async function startCamera() {
+    stream = await navigator.mediaDevices.getUserMedia({ audio: false, video: { facingMode: { ideal: "environment" }, width: { ideal: 1920 }, height: { ideal: 1080 }, focusMode: "continuous" } });
+    const v = $("video"); v.srcObject = stream; await v.play();
+    track = stream.getVideoTracks()[0];
+    try { const c = track.getCapabilities ? track.getCapabilities() : {}; if (c.torch) $("torchBtn").hidden = false; } catch (e) { }
+  }
+  let torch = false;
+  $("torchBtn").onclick = async () => { torch = !torch; $("torchBtn").classList.toggle("on", torch); try { await track.applyConstraints({ advanced: [{ torch }] }); } catch (e) { } };
+  let busy = false, frame = 0;
+  const MAX_SIDE = 1280;   // the whole picture, scaled so a frame reads fast on an iPhone
+  async function loop() {
+    if (!running) return;
+    const v = $("video");
+    if (!busy && v.videoWidth) {
+      busy = true;
+      try {
+        const scale = Math.min(1, MAX_SIDE / Math.max(v.videoWidth, v.videoHeight));
+        const w = Math.round(v.videoWidth * scale), h = Math.round(v.videoHeight * scale);
+        if (canvas.width !== w) canvas.width = w; if (canvas.height !== h) canvas.height = h;
+        ctx.drawImage(v, 0, 0, w, h);
+        const img = ctx.getImageData(0, 0, w, h);
+        const res = await ZXingWASM.readBarcodes(img, { formats: ["DataMatrix", "QRCode"], textMode: "HRI", tryHarder: true, maxNumberOfSymbols: 40 });
+        const found = [], until = Date.now() + 350;
+        (res || []).forEach((r) => {
+          if (!r.isValid || !r.text) return;
+          const f = classify(r.text, r.format); found.push(f);
+          const p = r.position;
+          if (p) {
+            const pts = [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft].map((q) => toScreen(q, scale));
+            const cx = pts.reduce((n, q) => n + q.x, 0) / 4, cy = pts.reduce((n, q) => n + q.y, 0) / 4;
+            outlines.push({ pts: pts.map((q) => ({ x: cx + (q.x - cx) * 1.22, y: cy + (q.y - cy) * 1.22 })), color: COLOR[f.show || f.kind], until });
+          }
+        });
+        if (found.length) feedback(found);
+        const now = Date.now(); inView.forEach((t, k) => { if (now - t > 30000) { inView.delete(k); kindOf.delete(k); } });
+      } catch (e) { }
+      busy = false;
+    }
+    drawMarks();
+    requestAnimationFrame(loop);
+  }
+
+  // sound needs one touch on an iPhone: the first tap anywhere turns it on
+  function unlockSound() {
+    try { ac = ac || new (window.AudioContext || window.webkitAudioContext)(); if (ac.state === "suspended") ac.resume(); tone(1, 10, "sine", 0, 0.0002); } catch (e) { }
+  }
+  document.addEventListener("pointerdown", unlockSound, { capture: true });
+  function cover(msg, button) {
+    $("coverMsg").innerHTML = msg; $("goBtn").textContent = button || ""; $("goBtn").hidden = !button; $("cover").classList.remove("hidden");
+  }
+  async function start() {
+    if (!API || !KEY) { cover("Open this page from the QR code in <b>RxDesk › Inventory Tools › Phones</b>, so it knows where to save scans."); return; }
+    try { await startCamera(); }
+    catch (e) {
+      cover(e && e.name === "NotAllowedError" && starting ? "Camera access is off for this page. Turn it on in <b>Settings › Safari › Camera</b>, then tap below." : "Point at the shelf and sweep slowly.", "Start scanning");
+      return;
+    }
+    $("cover").classList.add("hidden");
+    running = true; showSync(); requestAnimationFrame(loop);
+    try { await navigator.wakeLock?.request("screen"); } catch (e) { }
+  }
+  let starting = false;
+  $("goBtn").onclick = async () => { unlockSound(); starting = true; if (!running && boxes && $("goBtn").textContent === "Scan more") { seen.clear(); inView.clear(); boxes = short = again = 0; counts(); } await start(); };
+  $("stopBtn").onclick = async () => {
+    running = false;
+    try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (e) { }
+    outlines = []; drawMarks();
+    await flush();
+    const left = queue.length;
+    cover("<b>" + boxes + " box" + (boxes === 1 ? "" : "es") + "</b> scanned" + (short ? ", <b>" + short + "</b> expiring within 3 months" : "") + "." + (left ? "<br>" + left + " still saving: keep this page open with signal." : "<br>All saved."), "Scan more");
+  };
+  start();   // straight into scanning when the page opens (the camera asks permission the first time)
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") flush(); });
+})();
+</script>
+</body>
+</html>
