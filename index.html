@@ -202,7 +202,15 @@ video { width: 100%; height: 100%; object-fit: cover; }
     const y = 2000 + +yymmdd.slice(0, 2), m = +yymmdd.slice(2, 4); let d = +yymmdd.slice(4, 6);
     if (m < 1 || m > 12) return null;
     const last = new Date(y, m, 0).getDate(); if (d === 0) d = last; if (d > last) return null;
-    return new Date(y, m - 1, d);
+    const out = new Date(y, m - 1, d), now = new Date();
+    if (y < now.getFullYear() - 10 || y > now.getFullYear() + 15) return null;   // a misread, not a real date
+    return out;
+  }
+  // a drug's GTIN-14 is 0 + 03 + its 10-digit NDC + a check digit (the same rule RxDesk uses)
+  function isDrugGtin(g) {
+    if (!/^003\d{11}$/.test(g)) return false;
+    let sum = 0; for (let i = 0; i < 13; i++) sum += +g[i] * (i % 2 === 0 ? 3 : 1);
+    return (10 - sum % 10) % 10 === +g[13];
   }
   const iso = (d) => d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0") + "-" + String(d.getDate()).padStart(2, "0");
   const mmyyyy = (d) => String(d.getMonth() + 1).padStart(2, "0") + "/" + d.getFullYear();
@@ -257,13 +265,15 @@ video { width: 100%; height: 100%; object-fit: cover; }
     const now = Date.now(), last = inView.get(text);
     inView.set(text, now);
     if (last && now - last < PRUNE_MS) return { kind: "held" };
-    const g = format === "DataMatrix" || /^\(01\)/.test(text) ? parseGs1(text) : {};
+    if (!/^\(01\)\d{14}/.test(text)) return { kind: "ignore" };          // not a GS1 product code: not ours
+    const g = parseGs1(text);
     const gtin = g["01"] || "", exp = expDate(g["17"] || "");
-    if (!/^\d{14}$/.test(gtin) || !exp) return { kind: "bad", qr: format === "QRCode" };
+    if (!isDrugGtin(gtin) || !exp) return { kind: "ignore" };          // not a drug (NDC) code, or no expiration in it
     const serial = g["21"] || "", lot = g["10"] || "", ndc10 = gtin.startsWith("003") ? gtin.slice(3, 13) : "";
-    const key = serial ? gtin + "|" + serial : "";
-    if (key && seen.has(key)) { again++; return { kind: "again" }; }
-    if (key) seen.add(key);
+    // a box with a serial is one box for good; a code without one (RxDesk's own labels) is one product + lot + date per sweep
+    const key = serial ? gtin + "|" + serial : "L|" + gtin + "|" + lot + "|" + g["17"];
+    if (seen.has(key)) { again++; return { kind: "again" }; }
+    seen.add(key);
     const days = Math.floor((exp - new Date(new Date().toDateString())) / 864e5);
     boxes++;
     queue.push({ t: new Date().toISOString(), section, gtin, ndc10, exp: iso(exp), lot, serial });
@@ -340,11 +350,13 @@ video { width: 100%; height: 100%; object-fit: cover; }
         if (canvas.width !== w) canvas.width = w; if (canvas.height !== h) canvas.height = h;
         ctx.drawImage(v, 0, 0, w, h);
         const img = ctx.getImageData(0, 0, w, h);
-        const res = await ZXingWASM.readBarcodes(img, { formats: ["DataMatrix", "QRCode"], textMode: "HRI", tryHarder: true, maxNumberOfSymbols: 40 });
+        const res = await ZXingWASM.readBarcodes(img, { formats: ["DataMatrix"], textMode: "HRI", tryHarder: true, maxNumberOfSymbols: 40 });
         const found = [], until = Date.now() + 350;
         (res || []).forEach((r) => {
           if (!r.isValid || !r.text) return;
-          const f = classify(r.text, r.format); found.push(f);
+          const f = classify(r.text, r.format);
+          if (f.kind === "ignore" || f.show === "ignore") return;     // another code on the box: no mark, no sound
+          found.push(f);
           const p = r.position;
           if (p) {
             const pts = [p.topLeft, p.topRight, p.bottomRight, p.bottomLeft].map((q) => toScreen(q, scale));
