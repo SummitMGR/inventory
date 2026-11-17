@@ -6,9 +6,11 @@
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="theme-color" content="#083b33">
-<title>Expiration Scan</title>
+<title>Inventory Scan</title>
 <!--
-  RxDesk Inventory Tools: Expiration Scan (the phone page).
+  RxDesk Inventory Tools: Inventory Scan (the phone page).
+  1.45.8: cycle counts first. Name a count (optional), sweep the shelf, and every box lands in that count; Done shows
+  each product by name with its box count and total quantity. "Only check expirations" is the old sweep with no count.
   Point the phone at the 2D (GS1 Data Matrix) code on each box and keep moving: every box is logged by itself.
   Hosted on GitHub Pages (the camera needs https); opened from the QR code in RxDesk > Inventory Tools > Phones, whose
   link carries the web app address and access key after the # (never sent to GitHub).
@@ -93,6 +95,18 @@ video { width: 100%; height: 100%; object-fit: cover; }
 .ibtn.on { background: #fff; color: #000; }
 .ibtn svg { width: 22px; height: 22px; }
 .done { border: 0; border-radius: 16px; height: 46px; padding: 0 22px; background: var(--brand); color: #04221b; font-weight: 800; font-size: 1rem; }
+/* 1.45.8: cycle counts */
+.cover .who { max-width: 320px; text-align: center; }
+.cover .alt { border: 1.5px solid rgba(255,255,255,.25); background: rgba(255,255,255,.08); color: #fff; border-radius: 16px; padding: 14px 18px; font-weight: 700; width: min(320px, 100%); }
+.cover .link { border: 0; background: none; color: var(--muted); text-decoration: underline; font-weight: 600; padding: 8px; }
+.cover .sum { width: min(360px, 100%); max-height: 42vh; overflow: auto; text-align: left; background: rgba(11,26,32,.55); border-radius: 16px; padding: 6px 14px; }
+.cover .sum .p { display: flex; gap: 10px; align-items: baseline; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.08); }
+.cover .sum .p:last-child { border-bottom: 0; }
+.cover .sum .p .nm { flex: 1; font-weight: 700; color: var(--ink); line-height: 1.25; }
+.cover .sum .p .nm small { display: block; color: var(--muted); font-weight: 500; font-size: .78rem; }
+.cover .sum .p .n { font-weight: 800; color: var(--ink); white-space: nowrap; text-align: right; }
+.cover .sum .p .n small { display: block; color: var(--muted); font-weight: 600; font-size: .76rem; }
+.top .chip.count { background: rgba(25,179,140,.9); color: #04221b; border-color: transparent; }
 </style>
 </head>
 <body>
@@ -107,9 +121,13 @@ video { width: 100%; height: 100%; object-fit: cover; }
     <div class="banner" id="banner"></div>
     <div class="cover" id="cover">
       <div class="mark"><svg viewBox="0 0 24 24" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3"/><path d="M8 8h3v3H8zM13 13h3v3h-3zM13 8h3M8 13v3"/></svg></div>
-      <h1>Expiration Scan</h1>
+      <h1 id="coverTitle">Inventory Scan</h1>
       <p id="coverMsg">Point at the shelf and sweep slowly.</p>
+      <div class="sum hidden" id="sum"></div>
+      <input class="who hidden" id="countName" placeholder="Name this count (optional)" maxlength="60" autocomplete="off">
       <button class="go" id="goBtn">Start scanning</button>
+      <button class="alt hidden" id="altBtn"></button>
+      <button class="link hidden" id="sweepBtn">Only check expirations (no count)</button>
     </div>
   </div>
   <div class="dockbar">
@@ -134,6 +152,24 @@ video { width: 100%; height: 100%; object-fit: cover; }
   const API = store("inv.u") || "", KEY = store("inv.k") || "";
   let sections = ["Derm", "Eye", "Women's Health", "Counters", "Fridge"];
   let section = "";   // optional, and fresh each time the page opens (the next person never inherits it)
+  // 1.45.8: the cycle count this phone is scanning into (null = only checking expirations). Kept for the day, so a count
+  // can go on after the phone sleeps; "Finish this count" ends it.
+  const dayKey = new Date().toDateString();
+  let count = null;
+  try { const c = JSON.parse(store("inv.count") || "null"); if (c && c.day === dayKey && c.id) count = c; } catch (e) { }
+  const saveCount = () => store("inv.count", count ? JSON.stringify(count) : "null");
+  const newId = () => "c" + Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
+  // product names (from the Sheet, which asks the FDA once per product), remembered on this phone
+  let names = {}; try { names = JSON.parse(store("inv.names") || "{}"); } catch (e) { names = {}; }
+  const nameWait = new Set(); let nameT = 0;
+  function wantName(g) { if (names[g] || nameWait.has(g)) return; nameWait.add(g); clearTimeout(nameT); nameT = setTimeout(fetchNames, 1500); }
+  async function fetchNames() {
+    const gs = [...nameWait].slice(0, 20); if (!gs.length) return;
+    try { const j = await api({ a: "products", gtins: gs }); Object.assign(names, j.products || {}); store("inv.names", JSON.stringify(names)); gs.forEach((g) => nameWait.delete(g)); }
+    catch (e) { nameT = setTimeout(fetchNames, 8000); return; }
+    if (nameWait.size) nameT = setTimeout(fetchNames, 500);
+    if (!$("cover").classList.contains("hidden")) summary();
+  }
 
   async function api(body) {
     const r = await fetch(API, { method: "POST", body: JSON.stringify(Object.assign({ k: KEY }, body)), headers: { "Content-Type": "text/plain;charset=utf-8" }, redirect: "follow" });
@@ -143,7 +179,9 @@ video { width: 100%; height: 100%; object-fit: cover; }
   }
 
   function drawChips() {
-    const box = $("topSections"); box.innerHTML = '<span class="lbl">Section</span>';
+    const box = $("topSections"); box.innerHTML = "";
+    if (count) { const c = document.createElement("span"); c.className = "chip count"; c.textContent = "Count: " + (count.name || "today"); box.append(c); }
+    box.insertAdjacentHTML("beforeend", '<span class="lbl">Section</span>');
     sections.forEach((x) => {
       const b = document.createElement("button"); b.className = "chip" + (x === section ? " on" : ""); b.textContent = x;
       b.onclick = () => { section = section === x ? "" : x; drawChips(); showSync(); say(section ? "Section: " + section : "No section", "", "rgba(13,107,86,.95)", 900); };
@@ -222,9 +260,12 @@ video { width: 100%; height: 100%; object-fit: cover; }
   async function flush() {
     if (sending || !queue.length) { showSync(); return; }
     sending = true; showSync();
-    const batch = queue.slice(0, 100);
+    const cid = queue[0].count || "";
+    let n = 0; while (n < queue.length && n < 100 && (queue[n].count || "") === cid) n++;
+    const batch = queue.slice(0, n);
     try {
-      await api({ a: "scan", device: "phone", rows: batch });
+      const rows = batch.map((r) => { const o = Object.assign({}, r); delete o.count; delete o.countName; return o; });
+      await api(Object.assign({ a: "scan", device: "phone", rows }, cid ? { count: { id: cid, name: batch[0].countName || "" } } : {}));
       queue = queue.slice(batch.length); saveQ(); failed = false;
     } catch (e) { failed = true; /* offline or busy: tried again in a moment */ }
     sending = false; showSync();
@@ -251,6 +292,7 @@ video { width: 100%; height: 100%; object-fit: cover; }
     $("sShort").textContent = short; $("shortWrap").hidden = !short;
   }
 
+  const serialOf = (key) => !key.startsWith("L|");
   // Each code is remembered while it's in view, so a shelf sweep counts every box once. A serialized box (most Rx
   // boxes) counts once per sweep; a code without a serial counts again only after it has been out of view ~2 s.
   const inView = new Map();     // text -> last time seen
@@ -272,11 +314,13 @@ video { width: 100%; height: 100%; object-fit: cover; }
     const serial = g["21"] || "", lot = g["10"] || "", ndc10 = gtin.startsWith("003") ? gtin.slice(3, 13) : "";
     // a box with a serial is one box for good; a code without one (RxDesk's own labels) is one product + lot + date per sweep
     const key = serial ? gtin + "|" + serial : "L|" + gtin + "|" + lot + "|" + g["17"];
-    if (seen.has(key)) { again++; return { kind: "again" }; }
+    if (seen.has(key) || (count && serialOf(key) && count.seen.includes(key))) { again++; return { kind: "again" }; }
     seen.add(key);
     const days = Math.floor((exp - new Date(new Date().toDateString())) / 864e5);
     boxes++;
-    queue.push({ t: new Date().toISOString(), section, gtin, ndc10, exp: iso(exp), lot, serial });
+    queue.push(Object.assign({ t: new Date().toISOString(), section, gtin, ndc10, exp: iso(exp), lot, serial }, count ? { count: count.id, countName: count.name } : {}));
+    if (count) { const k = count.tally[gtin] = count.tally[gtin] || { n: 0, soon: 0 }; k.n++; if (exp - new Date() < 61 * 864e5) k.soon++; count.boxes = (count.boxes || 0) + 1; if (serial) count.seen.push(key); saveCount(); }
+    wantName(gtin);
     const what = (ndc10 ? ndc10.replace(/^(\d{5})(\d{3})(\d{2})$/, "$1-$2-$3") : gtin) + (lot ? " · " + lot : "");
     const kind = days < 0 ? "expired" : days <= SHORT_DAYS ? "short" : "good";
     if (kind !== "good") short++;
@@ -381,8 +425,42 @@ video { width: 100%; height: 100%; object-fit: cover; }
   function cover(msg, button) {
     $("coverMsg").innerHTML = msg; $("goBtn").textContent = button || ""; $("goBtn").hidden = !button; $("cover").classList.remove("hidden");
   }
+  const show = (id, on) => $(id).classList.toggle("hidden", !on);
+  // what each product came to in this count: "Arazlo 0.45mg/g · 45 g" with "2 boxes · 90 g"
+  const fmtNdc = (g) => g.slice(3, 13).replace(/^(\d{5})(\d{3})(\d{2})$/, "$1-$2-$3");
+  function total(p, n) { if (!p || !p.pkgQty) return ""; const q = Math.round(p.pkgQty * n * 100) / 100; return q + " " + (p.pkgUnit || ""); }
+  function summary() {
+    const box = $("sum"); box.innerHTML = "";
+    if (!count || !Object.keys(count.tally).length) { show("sum", false); return; }
+    Object.keys(count.tally).sort((a, b) => ((names[a] && names[a].name) || "~" + a).localeCompare((names[b] && names[b].name) || "~" + b)).forEach((g) => {
+      const t = count.tally[g], p = names[g];
+      const row = document.createElement("div"); row.className = "p";
+      const nm = document.createElement("div"); nm.className = "nm"; nm.textContent = p && p.name ? p.name + (p.strength ? " " + p.strength : "") : "NDC " + fmtNdc(g);
+      const sm = document.createElement("small"); sm.textContent = (p && p.name ? "NDC " + (p.ndc || fmtNdc(g)) : "Looking up the name…") + (p && p.pkgQty ? " · " + p.pkgQty + " " + p.pkgUnit + " each" : ""); nm.append(sm);
+      const n = document.createElement("div"); n.className = "n"; n.textContent = t.n + (t.n === 1 ? " box" : " boxes");
+      const tq = total(p, t.n); if (tq || t.soon) { const s2 = document.createElement("small"); s2.textContent = [tq, t.soon ? t.soon + " exp. < 2 mo" : ""].filter(Boolean).join(" · "); n.append(s2); }
+      row.append(nm, n); box.append(row);
+    });
+    show("sum", true);
+  }
+  // the first screen: start (or go on with) a cycle count, or only check expirations
+  function home(msg) {
+    $("coverTitle").textContent = "Inventory Scan";
+    show("sum", false);
+    if (count) {
+      cover(msg || "Today's count <b>" + (count.name || "(no name)") + "</b>: " + (count.boxes || 0) + " box" + (count.boxes === 1 ? "" : "es") + " so far.", "Keep counting");
+      show("countName", false); $("altBtn").textContent = "Start a new count"; show("altBtn", true); show("sweepBtn", true);
+      $("altBtn").onclick = () => { count = null; saveCount(); home(); };
+    } else {
+      cover(msg || "<b>Cycle count:</b> name it if you like, then scan every box of what you're counting.", "Start a cycle count");
+      show("countName", true); show("altBtn", false); show("sweepBtn", true);
+    }
+  }
+  $("sweepBtn").onclick = async () => { unlockSound(); mode = "sweep"; count = null; saveCount(); drawChips(); show("countName", false); show("altBtn", false); show("sweepBtn", false); show("sum", false); starting = true; await start(); };
+  let mode = "";
   async function start() {
     if (!API || !KEY) { cover("Open this page from the QR code in <b>RxDesk › Inventory Tools › Phones</b>, so it knows where to save scans."); return; }
+    show("countName", false); show("altBtn", false); show("sweepBtn", false); show("sum", false); drawChips();
     try { await startCamera(); }
     catch (e) {
       cover(e && e.name === "NotAllowedError" && starting ? "Camera access is off for this page. Turn it on in <b>Settings › Safari › Camera</b>, then tap below." : "Point at the shelf and sweep slowly.", "Start scanning");
@@ -393,16 +471,34 @@ video { width: 100%; height: 100%; object-fit: cover; }
     try { await navigator.wakeLock?.request("screen"); } catch (e) { }
   }
   let starting = false;
-  $("goBtn").onclick = async () => { unlockSound(); starting = true; if (!running && boxes && $("goBtn").textContent === "Scan more") { seen.clear(); inView.clear(); boxes = short = again = 0; counts(); } await start(); };
+  $("goBtn").onclick = async () => {
+    unlockSound(); starting = true;
+    const label = $("goBtn").textContent;
+    if (label === "Start a cycle count") { count = { id: newId(), name: $("countName").value.trim().slice(0, 60), day: dayKey, tally: {}, seen: [], boxes: 0 }; saveCount(); mode = "count"; $("countName").value = ""; }
+    else if (label === "Keep counting") mode = "count";
+    if (!running && boxes && /Scan more|Keep counting/.test(label)) { seen.clear(); inView.clear(); boxes = short = again = 0; counts(); }
+    await start();
+  };
   $("stopBtn").onclick = async () => {
     running = false;
     try { stream && stream.getTracks().forEach((t) => t.stop()); } catch (e) { }
     outlines = []; drawMarks();
-    await flush();
+    await flush(); await flush();
     const left = queue.length;
-    cover("<b>" + boxes + " box" + (boxes === 1 ? "" : "es") + "</b> scanned" + (short ? ", <b>" + short + "</b> expiring within 3 months" : "") + "." + (left ? "<br>" + left + " still saving: keep this page open with signal." : "<br>All saved."), "Scan more");
+    const saving = left ? "<br>" + left + " still saving: keep this page open with signal." : "<br>All saved.";
+    if (count) {
+      $("coverTitle").textContent = count.name || "Cycle count";
+      cover("<b>" + (count.boxes || 0) + " box" + (count.boxes === 1 ? "" : "es") + "</b> in this count, " + Object.keys(count.tally).length + " product" + (Object.keys(count.tally).length === 1 ? "" : "s") + "." + saving, "Keep counting");
+      summary(); if (nameWait.size) fetchNames();
+      $("altBtn").textContent = "Finish this count"; show("altBtn", true); show("sweepBtn", false);
+      $("altBtn").onclick = () => { count = null; saveCount(); drawChips(); home("Count saved. It's in RxDesk › Inventory Tools › Cycle counts."); };
+    } else {
+      cover("<b>" + boxes + " box" + (boxes === 1 ? "" : "es") + "</b> scanned" + (short ? ", <b>" + short + "</b> expiring within 3 months" : "") + "." + saving, "Scan more");
+      $("altBtn").textContent = "Start a cycle count"; show("altBtn", true);
+      $("altBtn").onclick = () => { count = null; saveCount(); home(); };
+    }
   };
-  start();   // straight into scanning when the page opens (the camera asks permission the first time)
+  if (!API || !KEY) start(); else home();   // 1.45.8: choose a cycle count (or only expirations) first
   document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") flush(); });
 })();
 </script>
